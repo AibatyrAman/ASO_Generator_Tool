@@ -9,7 +9,7 @@ import re
 import itertools
 from collections import Counter
 
-open_ai_key = "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"
+open_ai_key = "Cancure"
 class color():
     BLUE = "\033[34m"
     CYAN = "\033[36m"
