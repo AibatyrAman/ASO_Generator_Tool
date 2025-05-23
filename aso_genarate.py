@@ -8,8 +8,24 @@ import json
 import re
 import itertools
 from collections import Counter
+import logging
+from dotenv import load_dotenv
 
-open_ai_key = "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"
+# .env dosyasını yükle
+load_dotenv()
+
+# API anahtarını .env dosyasından al
+open_ai_key = os.getenv('OPENAI_API_KEY')
+
+if not open_ai_key:
+    raise ValueError("OPENAI_API_KEY bulunamadı. Lütfen .env dosyasını kontrol edin.")
+
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    filename='app.log'
+)
+
 class color():
     BLUE = "\033[34m"
     CYAN = "\033[36m"
