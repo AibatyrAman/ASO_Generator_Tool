@@ -26,10 +26,6 @@ logging.basicConfig(
     filename='app.log'
 )
 
-<<<<<<< HEAD
-=======
-open_ai_key = "Cancure"
->>>>>>> 593f124f15048f0d403942ba05dad30b53be97d2
 class color():
     BLUE = "\033[34m"
     CYAN = "\033[36m"
