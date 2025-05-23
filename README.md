@@ -22,13 +22,17 @@ tkinter
 tkinterdnd2
 pandas
 openai
+<<<<<<< HEAD
 python-dotenv
+=======
+>>>>>>> 593f124f15048f0d403942ba05dad30b53be97d2
 ```
 
 ## Kurulum
 
 1. Gerekli Python paketlerini yükleyin:
 ```bash
+<<<<<<< HEAD
 pip install pandas openai tkinterdnd2 python-dotenv
 ```
 
@@ -39,6 +43,14 @@ pip install pandas openai tkinterdnd2 python-dotenv
    OPENAI_API_KEY=your-api-key-here
    ```
    - `.env` dosyasını asla GitHub'a push etmeyin!
+=======
+pip install pandas openai tkinterdnd2
+```
+
+2. OpenAI API anahtarınızı ayarlayın:
+- `aso_genarate.py` dosyasındaki `open_ai_key` değişkenini kendi API anahtarınızla güncelleyin
+- Veya bir çevresel değişken olarak ayarlayın
+>>>>>>> 593f124f15048f0d403942ba05dad30b53be97d2
 
 ## Kullanım
 
@@ -106,4 +118,8 @@ Bu proje MIT lisansı altında lisanslanmıştır. Detaylar için `LICENSE` dosy
 
 ## İletişim
 
+<<<<<<< HEAD
 Sorularınız için issue açabilir veya pull request gönderebilirsiniz. 
+=======
+Sorularınız için issue açabilir veya pull request gönderebilirsiniz. 
+>>>>>>> 593f124f15048f0d403942ba05dad30b53be97d2
