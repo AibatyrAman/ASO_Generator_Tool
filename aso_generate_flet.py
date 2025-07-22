@@ -2,7 +2,6 @@ import flet as ft
 from flet import Colors, Icons, FontWeight, TextAlign, ThemeMode, ScrollMode, KeyboardType
 import os
 import pandas as pd
-from openai import OpenAI
 import json
 import re
 import itertools
@@ -10,11 +9,6 @@ from collections import Counter
 import logging
 import asyncio
 from typing import Optional, List, Dict, Any
-
-# API anahtarı direkt kod içinde
-open_ai_key = #Kopyalaman gerekicek env'den
-# OpenAI client oluştur
-client = OpenAI(api_key=open_ai_key)
 
 logging.basicConfig(
     level=logging.DEBUG,
@@ -36,8 +30,8 @@ class Df_Get():
     def merged_noduplicate_df(klasor_yolu):
         """
         Klasördeki tüm .csv dosyalarını birleştirir,
-        Keyword, Volume ve Difficulty sütunlarına göre tekrarlı satırları kaldırır,
-        tüm sütunları saklayarak bir DataFrame döndürür.
+        tekrarlı satırları silmez, tüm verileri korur.
+        CSV dosya adlarından kategori bilgisini çıkarır.
         """
         print("DEBUG: merged_noduplicate_df() başlatıldı. Klasör:", klasor_yolu)
         try:
@@ -49,19 +43,23 @@ class Df_Get():
             dataframes = []
             for dosya in csv_dosyalar:
                 df_temp = pd.read_csv(os.path.join(klasor_yolu, dosya))
-                print(f"DEBUG: {dosya} okundu, şekli: {df_temp.shape}")
+                
+                # CSV dosya adından kategori bilgisini çıkar
+                # Örnek: "trending-keywords-US-Health & Fitness.csv" -> "Health & Fitness"
+                kategori = dosya.replace('.csv', '').replace('trending-keywords-', '')
+                if '-' in kategori:
+                    # US-Health & Fitness -> Health & Fitness
+                    kategori = kategori.split('-', 1)[1] if kategori.count('-') > 0 else kategori
+                
+                # Kategori sütunu ekle
+                df_temp['Category'] = kategori
+                
+                print(f"DEBUG: {dosya} okundu, şekli: {df_temp.shape}, kategori: {kategori}")
                 dataframes.append(df_temp)
 
-            # Bütün CSV'ler birleştiriliyor
+            # Bütün CSV'ler birleştiriliyor - tekrarlar silinmiyor
             birlesik_df = pd.concat(dataframes, ignore_index=True)
             
-            # Öncelikle, Difficulty sütununa göre azalan sırayla sıralıyoruz
-            birlesik_df.sort_values(by="Difficulty", ascending=False, inplace=True)
-
-            # Sadece Keyword sütunundaki tekrarları kaldırıp,
-            # en yüksek Difficulty değerine sahip satırı tutuyoruz
-            birlesik_df.drop_duplicates(subset=["Keyword"], keep="first", ignore_index=True, inplace=True)
-
             print("DEBUG: Birleştirilmiş DataFrame şekli:", birlesik_df.shape)
             return birlesik_df
 
@@ -69,16 +67,24 @@ class Df_Get():
             raise ValueError(f"CSV birleştirme hatası: {e}")
         
     def kvd_df(df,limit):
-        df = df[(df["Volume"] >= 20) & (df["Difficulty"] <= limit)]
-        df.loc[:, "Volume"] = pd.to_numeric(df["Volume"], errors="coerce")
-        df = df.dropna(subset=["Volume"])  
-        df["Volume"] = df["Volume"].astype(int)
-        df.sort_values(by="Volume", ascending=False, inplace=True)
-        df = df[["Keyword", "Volume", "Difficulty"]].dropna()
-        print("DEBUG: Filtrelenmiş ve sıralanmış KVD CSV:\n", df)
-        return df
+        # Difficulty filtresini düzgün uygula
+        filtered_df = df[(df["Volume"] >= 20) & (df["Difficulty"] <= limit)].copy()
+        
+        # Volume sütununu numeric'e çevir
+        filtered_df.loc[:, "Volume"] = pd.to_numeric(filtered_df["Volume"], errors="coerce")
+        filtered_df = filtered_df.dropna(subset=["Volume"])  
+        filtered_df["Volume"] = filtered_df["Volume"].astype(int)
+        
+        # Volume'a göre sırala
+        filtered_df.sort_values(by="Volume", ascending=False, inplace=True)
+        
+        # Tüm sütunları koru, sadece NaN değerleri temizle
+        filtered_df = filtered_df.dropna(subset=["Keyword", "Volume", "Difficulty"])
+        
+        print("DEBUG: Filtrelenmiş ve sıralanmış KVD CSV:\n", filtered_df)
+        return filtered_df
 
-    def kelime_frekans_df(df, openai_api_key):
+    def kelime_frekans_df(df):
         print("DEBUG: kelime_frekans_df() başlatıldı.")
         kelimeler = " ".join(df["Keyword"].astype(str)).split()
         print("DEBUG: Birleştirilmiş kelimeler:", kelimeler)
@@ -87,13 +93,11 @@ class Df_Get():
         print("DEBUG: Frekans DataFrame'i:\n", df_kf)
         return df_kf
 
-    def without_branded_kf_df_get(df_kf, openai_api_key):
+    def without_branded_kf_df_get(df_kf):
         """
-        Branded kelimeleri ve yasaklı kelimeleri DataFrame'den filtreler.
+        Yasaklı kelimeleri DataFrame'den filtreler.
         """
         try:
-            word_list = df_kf['Kelime'].tolist()
-            
             yasakli_kelimeler = [
                 "free", "new", "best", "top", "iphone", "ipad", "android", "google", "store", 
                 "download", "downloads", "for", "apple", "with", "yours", "a", "about", "above", "after", "again", "against", "all", 
@@ -111,56 +115,8 @@ class Df_Get():
                 "whom", "why", "why's", "won't", "would", "wouldn't", "you", "you'd", "you'll", "you're", "you've", "your", "yours", 
                 "yourself", "yourselves"]
             
-            system_prompt = """
-You are an expert in identifying branded words and proper nouns. Your task is to determine if the given words are branded words or proper nouns (like "Williams", "Sherwin", etc.).
-You need to identify and return only the words that are branded or proper nouns from the provided list.
-
-Here is the task in detail:
-1. Review the following list of words.
-2. Identify the branded words and proper nouns.
-3. Return the list of identified branded words and proper nouns in the following format:
-
-Example:
-- Input: ["Apple", "car", "Sherwin", "painting"]
-- Output: ["Apple", "Sherwin"]
-
-*Important*: 
-- Only include the branded words and proper nouns in the returned list, and avoid any other words."""
-            
-            user_prompt = f"""
-            Here is the list of words:
-            {word_list}
-
-            Return the list of branded words and proper nouns in the following format:
-            ["word1", "word2", "word3"]
-            """
-            
-            response = client.chat.completions.create(
-                model="gpt-4",
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-                temperature=0,
-                max_tokens=150
-            )
-            
-            answer = response.choices[0].message.content.strip()
-            print(f'{color.RED}DEBUG:BRANDED API yanıtı:{color.RESET} {answer}')
-            
-            try:
-                branded_data = json.loads(answer)
-                print("DEBUG: JSON başarıyla ayrıştırıldı:", branded_data)
-                branded_words = [str(item).lower() for item in branded_data] if isinstance(branded_data, list) else []
-            except json.JSONDecodeError:
-                print("DEBUG: JSON ayrıştırma hatası, manuel işleme yapılıyor")
-                cleaned = answer.replace("[", "").replace("]", "").replace('"', '').strip()
-                branded_words = [w.strip().lower() for w in cleaned.split(",") if w.strip()]
-                print("DEBUG: Manuel temizlenmiş veri:", branded_words)
-
             # Kelime filtresi oluştur ve mask ile filtreleme yap
-            mask = ~(df_kf['Kelime'].str.lower().isin(branded_words) | 
-                    df_kf['Kelime'].str.lower().isin(yasakli_kelimeler))
+            mask = ~(df_kf['Kelime'].str.lower().isin(yasakli_kelimeler))
             
             # Filtrelenmiş DataFrame'i oluştur
             filtered_df = df_kf[mask].copy()
@@ -189,241 +145,64 @@ Example:
             print(f"\033[31mHATA: Genel hata: {str(e)}\033[0m")
             return pd.DataFrame(columns=['Kelime', 'Frekans'])
         
-    def without_suffixes_df_get(kf_df, selected_country,openai_api_key):
+    def without_suffixes_df_get(kf_df):
         """
-        Kelimelerin çoğul eklerini kaldırır ve tekil formlarını döndürür.
+        Kelimeleri olduğu gibi döndürür (API kullanmadan).
         """
         try:
             if kf_df is None or kf_df.empty:
                 print("\033[31mHATA: Boş veya geçersiz DataFrame\033[0m")
                 return pd.DataFrame(columns=['Kelime', 'Frekans'])
             
-            keyword_list = kf_df['Kelime'].dropna().tolist()
-            if not keyword_list:
-                print("\033[33mUYARI: Kelime listesi boş\033[0m")
-                return pd.DataFrame(columns=['Kelime', 'Frekans'])
-
-            print(f"{color.CYAN}DEBUG: SUFFİXES COUNTRY:{selected_country}{color.RESET}")
-            
-            system_prompt = f"""
-You are an expert in language processing. Your task is:
-1. Given a Python list of keywords in the language relevant to the market of {selected_country},
-2. Remove only the plural suffixes from each word to return the singular/base form. For example, if the keywords are in English (as in the {selected_country} market when applicable), remove plural suffixes such as -s, -es, and -ies. If the keywords are in another language, apply the appropriate plural suffix removal rules according to the language conventions of {selected_country}.
-3. If a word does not end with any of these plural suffixes, leave it unchanged.
-4. Provide the final answer strictly as a Python list of strings.
-
-Example:
-- Input: ["cats", "boxes", "stories", "apple"]
-- Output: ["cat", "box", "story", "apple"]
-
-**WARNING**: Only remove plural suffixes. Do not remove any other suffix or modify the word in any other way.
-"""
-
-            user_prompt = f"""
-            Here is the list of words:
-            {keyword_list}
-
-            Return the processed list in JSON list format. For example:
-            ["word1","word2","word3"]
-            """
-
-            try:
-                response = client.chat.completions.create(
-                    model="gpt-4o",
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_prompt},
-                    ],
-                    temperature=0,
-                    timeout=60
-                )
-
-                answer = response.choices[0].message.content.strip()
-                print(f"\033[34mDEBUG: Suffixes API yanıtı: {answer}\033[0m")
-
-                # Yanıtın başında ve sonunda üçlü tırnak içeren kod bloğu olup olmadığını kontrol et ve temizle
-                if answer.startswith("```json") or answer.startswith("```python"):
-                    answer = answer.split("```")[1]
-                    answer = answer.replace("json", "").replace("python", "").strip()
-                    answer = answer.split("```")[0]
-
-                try:
-                    base_form_list = json.loads(answer)
-
-                    if not isinstance(base_form_list, list) or not base_form_list:
-                        raise ValueError("API yanıtı geçerli bir liste değil veya boş.")
-
-                    if len(base_form_list) != len(keyword_list):
-                        print(f"\033[33mUYARI: API yanıt uzunluğu ({len(base_form_list)}) keyword listesi uzunluğu ({len(keyword_list)}) ile eşleşmiyor. Orijinal liste kullanılacak.\033[0m")
-                        base_form_list = keyword_list
-
-                    kf_df['Frekans'] = kf_df['Frekans'].fillna(0)
-
-                    result_df = pd.DataFrame({
-                        'Kelime': base_form_list,
-                        'Frekans': kf_df['Frekans']
-                    })
-                    result_df = Df_Get.aggregate_frequencies(result_df)
-                    result_df = result_df.sort_values(by='Frekans', ascending=False)
-
-                    print(f"\033[32mDEBUG: İşlenmiş kelime sayısı: {len(result_df)}\033[0m")
-                    return pd.DataFrame(result_df)
-
-                except json.JSONDecodeError as e:
-                    print(f"\033[31mHATA: JSON ayrıştırma hatası: {str(e)}\033[0m")
-                    return kf_df
-
-            except Exception as e:
-                print(f"\033[31mHATA: API çağrısı veya işleme hatası: {str(e)}\033[0m")
-                return kf_df
+            print(f"\033[32mDEBUG: Kelimeler olduğu gibi döndürülüyor: {len(kf_df)}\033[0m")
+            return kf_df.copy()
 
         except Exception as e:
             print(f"\033[31mHATA: Genel hata: {str(e)}\033[0m")
             return pd.DataFrame(columns=['Kelime', 'Frekans'])
 
-    def gpt_Title_Subtitle_df_get(df, app_name, selected_country, openai_api_key, retry_count=0, max_retries=3):
-        print(f"DEBUG: gpt_Title_Subtitle_df() başlatıldı. retry_count={retry_count}")
+    def gpt_Title_Subtitle_df_get(df, app_name, selected_country):
+        print(f"DEBUG: gpt_Title_Subtitle_df() başlatıldı.")
         print(f"{color.YELLOW}gpt_Title_Subtitle_df_get için kullanılan df:\n{df}{color.RESET}")
         df_sorted = df.sort_values(by='Frekans', ascending=False)
-        top_keywords = df_sorted['Kelime'].tolist()
+        top_keywords = df_sorted['Kelime'].tolist()[:10]  # İlk 10 kelimeyi al
         print("DEBUG: En sık kullanılan kelimeler:", top_keywords)
         
-        prompt_system = f'''
-You are an experienced ASO (App Store Optimization) expert. Your task is to generate optimized Title and Subtitle for an app based on the provided keyword data, taking into account the market characteristics of the selected country: **{selected_country}**.
-
-I will provide you with a list of keywords sorted by frequency. Based on this information, your task is to generate the most optimized Title and Subtitle for an app's App Store page for the {selected_country} market. Here are the detailed rules:
-
-1. **Title**:
-- Must include the app name: **{app_name}**
-- The title must be no longer than **30 characters** and no shorter than **25 characters**.
-- Use the most frequent keywords first, prioritizing those at the beginning of the provided list.
-- Ensure that the titles are unique and not repetitive; each generated title should use a different combination of keywords.
-- **Do not include any of the following words like: "and", "or", "your", "my", "with", etc.**
-
-2. **Subtitle**:
-- It must not exceed **30 characters** and no shorter than **25 characters**.
-- Do not repeat any keywords used in the Title.
-- Use the most frequent keywords first, prioritizing those at the beginning of the provided list.
-- Ensure that the subtitles are unique and distinct from each other.
-- **Do not include any of the following words like: "and", "or", "your", "my", "with".**
-
-3. **Important**:
-- Focus on using keywords from the beginning of the provided list, where the frequency values are higher.
-- Make sure the Title and Subtitle align with these rules to maximize the app's visibility and effectiveness in the App Store.
-- **Do not include any of the following words like: "and", "or", "your", "my", "with".**
-- *Only generate 5 title and 5 subtitle*
-'''
+        # Basit title ve subtitle oluştur
+        titles = []
+        subtitles = []
         
-        prompt_user = f'''
-Here are the most frequent keywords:
-{','.join(top_keywords)}
-- **The title and subtitle must be no longer than 30 characters and no shorter than 25 characters.**
-- **Do not include any of the following words like: "and", "or", "your", "my", "with".**
-- *Only generate 5 title and 5 subtitle*
-
-**Provide the output strictly in the following JSON format:**
-json
-{{
-"data": [
-    {{"Title": "Generated Title", "Subtitle": "Generated Subtitle"}},
-    {{"Title": "Generated Title", "Subtitle": "Generated Subtitle"}},
-    {{"Title": "Generated Title", "Subtitle": "Generated Subtitle"}},
-    {{"Title": "Generated Title", "Subtitle": "Generated Subtitle"}},
-    {{"Title": "Generated Title", "Subtitle": "Generated Subtitle"}}
-]
-}}
-'''
+        for i in range(5):
+            if i < len(top_keywords):
+                title = f"{app_name} {top_keywords[i]}"
+                subtitle = f"{top_keywords[i+1] if i+1 < len(top_keywords) else top_keywords[0]} App"
+                
+                # Uzunluk kontrolü
+                if len(title) > 30:
+                    title = title[:27] + "..."
+                if len(subtitle) > 30:
+                    subtitle = subtitle[:27] + "..."
+                    
+                titles.append(title)
+                subtitles.append(subtitle)
+            else:
+                titles.append(f"{app_name} App")
+                subtitles.append("Best App Store")
         
-        print('\033[31m\033[44mDEBUG: OpenAI isteği hazırlanıyor\033[0m')
-        try:
-            response = client.chat.completions.create(
-                model="gpt-4o",
-                messages=[
-                    {"role": "system", "content": prompt_system},
-                    {"role": "user", "content": prompt_user}
-                ],
-                temperature=0.7,
-                max_tokens=539,
-            )
-            text_output = response.choices[0].message.content
-            
-            def parse_openai_json(text_output):
-                match = re.search(r'```json\s*(\{.*?\})\s*```', text_output, re.DOTALL)
-                
-                if match:
-                    json_text = match.group(1)
-                    print("DEBUG: JSON formatı bulundu.")
-                else:
-                    json_text = text_output
-                    print("DEBUG: Tüm metin JSON olarak kullanılacak.")
-                
-                json_text = json_text.strip()
-                json_text = json_text.replace(""", "\"").replace(""", "\"")
-                json_text = json_text.encode("utf-8", "ignore").decode("utf-8", "ignore")
-
-                output_data = json.loads(json_text)
-                return output_data
-
-            try:
-                parsed = parse_openai_json(text_output)
-                print(parsed)
-            except json.JSONDecodeError as e:
-                print("JSON hatası yakalandı:", e)
-
-            title_stitle_df = pd.DataFrame(parse_openai_json(text_output)["data"], columns=["Title", "Subtitle"])
-            print("DEBUG: API yanıtından oluşturulan DataFrame:\n", title_stitle_df)
-
-            unused_keywords_list = []  
-            title_len_list = []
-            subtitle_len_list = []
-            toplam_keywords_lenght_list = []
-
-            for index, row in title_stitle_df.iterrows():
-                top_keywords_for_for = set()
-                top_keywords_for_for = top_keywords
-                title_words = set(row["Title"].split())  
-                subtitle_words = set(row["Subtitle"].split())  
-
-                title_len_list.append(len(row["Title"]))
-                subtitle_len_list.append(len(row["Subtitle"]))
-
-                used_keywords = title_words.union(subtitle_words)
-                used_keywords = set(item.lower() for item in used_keywords)
-                print("\033[32mDEBUG: Used_Keyword Çıktısı: \033[0m", used_keywords)
-
-                unused_keywords = [kw for kw in top_keywords_for_for if kw.lower() not in used_keywords]
-                print("\033[33mUnused_Keyword:\033[0m", unused_keywords)
-
-                result_str = ""
-                for keyword in unused_keywords:
-                    candidate = keyword if result_str == "" else result_str + "," + keyword
-                    try:
-                        if len(candidate) <= 100:
-                            result_str = candidate
-                        else:
-                            toplam_keywords_lenght_list.append(len(result_str))
-                            break
-                    except ValueError as e:
-                        if "Length of values" in str(e) and "does not match length of index" in str(e):
-                            print("DEBUG: unused_keywords_list uzunluğu DataFrame indeks uzunluğu ile uyuşmuyor!")
-                            toplam_keywords_lenght_list.append(len(result_str))
-                        else:
-                            raise
-
-                print("\033[34mresult_str:\n\033[0m", result_str)
-                unused_keywords_list.append(result_str)
-
-            title_stitle_df["Keywords"] = unused_keywords_list
-            title_stitle_df["Keywords_Lenght"] = toplam_keywords_lenght_list
-            title_stitle_df["Title_Lenght"] = title_len_list
-            title_stitle_df["Subtitle_Lenght"] = subtitle_len_list
-
-            print("DEBUG: Son DataFrame (gpt_Title_Subtitle_df()):\n", title_stitle_df)
-            return title_stitle_df
-
-        except (json.JSONDecodeError, ValueError, KeyError) as e:
-            print("DEBUG: gpt_Title_Subtitle_df() hatası:", e)
-            return pd.DataFrame(columns=["Title", "Subtitle"])
+        # DataFrame oluştur
+        title_stitle_df = pd.DataFrame({
+            "Title": titles,
+            "Subtitle": subtitles
+        })
+        
+        # Ek bilgiler ekle
+        title_stitle_df["Keywords"] = [",".join(top_keywords)] * 5
+        title_stitle_df["Keywords_Lenght"] = [len(",".join(top_keywords))] * 5
+        title_stitle_df["Title_Lenght"] = [len(title) for title in titles]
+        title_stitle_df["Subtitle_Lenght"] = [len(subtitle) for subtitle in subtitles]
+        
+        print("DEBUG: Oluşturulan DataFrame:\n", title_stitle_df)
+        return title_stitle_df
         
     def find_matching_keywords(title_subtitle_df, merged_df):
         print(f"\033[34mDEBUG: find_matching_keywords() başladı.\033[0m")
@@ -502,12 +281,9 @@ class ASOApp:
         # Veri storage
         self.folder_path = ""
         self.difficulty_limit = 20
-        self.growth_limit = 0
-        self.selected_country = "United States"
         self.selected_category = "Tümü"
-        self.selected_country_filter = "Tümü"
         self.app_name = ""
-        self.open_ai_key = open_ai_key
+
         
         # DataFrame'ler
         self.merged_noduplicate_df = None
@@ -519,6 +295,7 @@ class ASOApp:
         self.matching_keywords_df_ts = None
         self.matching_keywords_df = None
         self.current_table = None
+        self.current_display_df = None
         
         self.setup_ui()
         
@@ -643,45 +420,12 @@ class ASOApp:
             expand=True
         )
         
-        # Growth filter
-        self.growth_input = ft.TextField(
-            label="Growth Sınırı",
-            value="0",
-            keyboard_type=ft.KeyboardType.NUMBER,
-            on_change=self.on_growth_changed,
-            expand=True
-        )
-        
         # Category filter dropdown
         self.category_dropdown = ft.Dropdown(
             label="Kategori Filtresi",
             value="Tümü",
-            options=[
-                ft.dropdown.Option("Tümü"),
-                ft.dropdown.Option("Photo & Video"),
-                ft.dropdown.Option("Productivity"),
-                ft.dropdown.Option("Music"),
-                ft.dropdown.Option("Health & Fitness")
-            ],
+            options=[ft.dropdown.Option("Tümü")],
             on_change=self.on_category_changed,
-            expand=True
-        )
-        
-        # Country filter dropdown
-        self.country_filter_dropdown = ft.Dropdown(
-            label="Ülke Filtresi",
-            value="Tümü",
-            options=[
-                ft.dropdown.Option("Tümü"),
-                ft.dropdown.Option("United States"),
-                ft.dropdown.Option("United Kingdom"),
-                ft.dropdown.Option("Germany"),
-                ft.dropdown.Option("France"),
-                ft.dropdown.Option("Japan"),
-                ft.dropdown.Option("Canada"),
-                ft.dropdown.Option("Australia")
-            ],
-            on_change=self.on_country_filter_changed,
             expand=True
         )
         
@@ -770,26 +514,20 @@ class ASOApp:
             ),
             ft.Divider(height=20),
             # Filtre bölgesi için scroll container
-            ft.Container(
+                            ft.Container(
                 content=ft.Column([
                     filter_title,
                     ft.Divider(height=10),
                     ft.Row([
                         self.difficulty_filter_input,
                         ft.Container(width=10),
-                        self.growth_input
-                    ]),
-                    ft.Divider(height=10),
-                    ft.Row([
-                        self.category_dropdown,
-                        ft.Container(width=10),
-                        self.country_filter_dropdown
+                        self.category_dropdown
                     ]),
                     ft.Divider(height=10),
                     self.apply_filters_button,
                     ft.Container(height=10)  # Bottom padding
                 ], spacing=5, scroll=ScrollMode.ALWAYS),
-                height=200,  # Sabit yükseklik
+                height=150,  # Sabit yükseklik
                 border=ft.border.all(1, Colors.BLUE_200),
                 border_radius=8,
                 padding=10,
@@ -833,18 +571,15 @@ class ASOApp:
             horizontal_lines=ft.border.BorderSide(1, Colors.GREY_300),
             heading_row_color=Colors.BLUE_50,
             heading_row_height=50,
-            column_spacing=20,  # Küçültüldü responsive için
+            column_spacing=20,
             show_checkbox_column=False,
             divider_thickness=1
-            # width kaldırıldı - responsive olacak
         )
         
         # Table container - Responsive with horizontal and vertical scrolling
         table_container = ft.Container(
-            content=ft.Row([
-                ft.Column([
-                    self.data_table
-                ], scroll=ScrollMode.AUTO),
+            content=ft.Column([
+                self.data_table
             ], scroll=ScrollMode.AUTO),
             height=500,
             border=ft.border.all(1, Colors.GREY_300),
@@ -908,17 +643,8 @@ class ASOApp:
         except ValueError:
             self.difficulty_limit = 20
     
-    def on_growth_changed(self, e):
-        try:
-            self.growth_limit = float(e.control.value)
-        except ValueError:
-            self.growth_limit = 0
-    
     def on_category_changed(self, e):
         self.selected_category = e.control.value
-    
-    def on_country_filter_changed(self, e):
-        self.selected_country_filter = e.control.value
     
     def apply_filters(self, e):
         """Filtreleri uygular ve mevcut tabloyu günceller"""
@@ -934,17 +660,9 @@ class ASOApp:
             if self.difficulty_limit > 0:
                 filtered_df = filtered_df[filtered_df['Difficulty'] <= self.difficulty_limit]
             
-            # Growth filtresi (eğer Growth sütunu varsa)
-            if self.growth_limit > 0 and 'Growth' in filtered_df.columns:
-                filtered_df = filtered_df[filtered_df['Growth'] >= self.growth_limit]
-            
             # Kategori filtresi
             if self.selected_category != "Tümü":
                 filtered_df = filtered_df[filtered_df['Category'] == self.selected_category]
-            
-            # Ülke filtresi (eğer Country sütunu varsa)
-            if self.selected_country_filter != "Tümü" and 'Country' in filtered_df.columns:
-                filtered_df = filtered_df[filtered_df['Country'] == self.selected_country_filter]
             
             # Filtrelenmiş veriyi göster
             if filtered_df.empty:
@@ -971,8 +689,11 @@ class ASOApp:
             # Load data
             self.merged_noduplicate_df = Df_Get.merged_noduplicate_df(self.folder_path)
             self.kvd_df = Df_Get.kvd_df(self.merged_noduplicate_df, self.difficulty_limit)
-            self.kelime_frekans_df = Df_Get.kelime_frekans_df(self.kvd_df, self.open_ai_key)
-            self.without_branded_df = Df_Get.without_branded_kf_df_get(self.kelime_frekans_df, self.open_ai_key)
+            self.kelime_frekans_df = Df_Get.kelime_frekans_df(self.kvd_df)
+            self.without_branded_df = Df_Get.without_branded_kf_df_get(self.kelime_frekans_df)
+            
+            # Kategori dropdown'unu güncelle
+            self.update_category_dropdown()
             
             self.hide_loading()
             self.show_success("Veriler başarıyla yüklendi!")
@@ -980,6 +701,14 @@ class ASOApp:
         except Exception as ex:
             self.hide_loading()
             self.show_error(f"Veri yükleme hatası: {str(ex)}")
+    
+    def update_category_dropdown(self):
+        """Kategori dropdown'unu mevcut kategorilerle günceller"""
+        if self.merged_noduplicate_df is not None and 'Category' in self.merged_noduplicate_df.columns:
+            categories = ['Tümü'] + sorted(self.merged_noduplicate_df['Category'].unique().tolist())
+            self.category_dropdown.options = [ft.dropdown.Option(cat) for cat in categories]
+            self.category_dropdown.value = "Tümü"
+            self.page.update()
     
     def show_merged_table(self, e):
         if self.merged_noduplicate_df is None:
@@ -1021,7 +750,7 @@ class ASOApp:
         try:
             self.show_loading("Ekler kaldırılıyor...")
             self.without_suffixes_df = Df_Get.without_suffixes_df_get(
-                self.without_branded_df, "United States", self.open_ai_key
+                self.without_branded_df
             )
             self.hide_loading()
             
@@ -1041,7 +770,7 @@ class ASOApp:
             self.show_loading("Title ve Subtitle oluşturuluyor...")
             
             self.gpt_title_subtitle_df = Df_Get.gpt_Title_Subtitle_df_get(
-                self.without_suffixes_df, "App Name", "United States", self.open_ai_key
+                self.without_suffixes_df, "App Name", "United States"
             )
             
             if self.gpt_title_subtitle_df.empty:
@@ -1070,11 +799,14 @@ class ASOApp:
         # Update table title
         self.table_title.value = title
         
+        # Store current dataframe for sorting
+        self.current_display_df = df.copy()
+        
         # Clear existing data
         self.data_table.columns.clear()
         self.data_table.rows.clear()
         
-        # Add columns with dynamic width
+        # Add columns with clickable headers
         for col in df.columns:
             self.data_table.columns.append(
                 ft.DataColumn(
@@ -1083,12 +815,20 @@ class ASOApp:
                         size=12,
                         weight=FontWeight.BOLD,
                         color=Colors.BLUE_700
-                    )
+                    ),
+                    on_tap=lambda e, col=col: self.sort_table_by_column(col)
                 )
             )
         
         # Add rows (limit to first 100 rows for performance)
-        for idx, row in df.head(100).iterrows():
+        self.add_table_rows(df.head(100))
+        
+        self.page.update()
+    
+    def add_table_rows(self, df):
+        """Tabloya satırları ekler"""
+        self.data_table.rows.clear()
+        for idx, row in df.iterrows():
             cells = []
             for value in row:
                 cells.append(
@@ -1101,8 +841,41 @@ class ASOApp:
                     )
                 )
             self.data_table.rows.append(ft.DataRow(cells=cells))
+    
+    def sort_table_by_column(self, column_name):
+        """Tabloyu belirtilen sütuna göre sıralar"""
+        if self.current_display_df is None:
+            return
         
-        self.page.update()
+        try:
+            # Mevcut sıralama durumunu kontrol et
+            if hasattr(self, 'current_sort_column') and self.current_sort_column == column_name:
+                # Aynı sütuna tekrar tıklandıysa sıralama yönünü değiştir
+                self.current_sort_ascending = not getattr(self, 'current_sort_ascending', True)
+            else:
+                # Yeni sütun seçildiyse artan sıralama yap
+                self.current_sort_ascending = True
+            
+            self.current_sort_column = column_name
+            
+            # Sıralama yap
+            sorted_df = self.current_display_df.sort_values(
+                by=column_name, 
+                ascending=self.current_sort_ascending,
+                na_position='last'
+            )
+            
+            # Tabloyu güncelle
+            self.add_table_rows(sorted_df.head(100))
+            
+            # Sıralama yönünü göster
+            direction = "↑" if self.current_sort_ascending else "↓"
+            self.show_success(f"Tablo '{column_name}' sütununa göre sıralandı {direction}")
+            
+            self.page.update()
+            
+        except Exception as e:
+            self.show_error(f"Sıralama hatası: {str(e)}")
     
     def export_table(self, e):
         if self.current_table is None:
